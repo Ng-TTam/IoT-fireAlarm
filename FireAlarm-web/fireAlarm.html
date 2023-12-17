@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Fire Alarm Map</title>
+  <style>
+    #map {
+      height: 705px;
+      width: 100%;
+    }
+
+    .popup-content {
+      width: 200px;
+    }
+  </style>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://api.mqcdn.com/sdk/mapquest-js/v1.3.2/mapquest.js"></script>
+  <link type="text/css" rel="stylesheet" href="https://api.mqcdn.com/sdk/mapquest-js/v1.3.2/mapquest.css" />
+  <script src="https://api.mqcdn.com/sdk/mapquest-js/v1.3.2/mapquest-core.js"></script>
+  <link type="text/css" rel="stylesheet" href="https://api.mqcdn.com/sdk/mapquest-js/v1.3.2/mapquest-core.css" />
+  <script src="https://www.mapquestapi.com/sdk/leaflet/v2.2/mq-map.js"></script>
+  <script src="https://www.mapquestapi.com/sdk/leaflet/v2.2/mq-geocoding.js"></script>
+  <script src="https://www.mapquestapi.com/sdk/leaflet/v2.2/mq-map.js?key=Ljjt4RzEa2qlCMJqkFdDGXYexFvCz53n"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <link rel="stylesheet" href="fireAlarm.css" />
+</head>
+
+<body>
+  <div id="map"></div>
+  <form action="/history.html">
+    <button type="submit" id="custom-button" class="button">History</button>
+  </form>
+</body>
+<script>
+  var lat = '0';
+  var lng = '0';
+  //------------------mqtt connection------------------------------------------------
+  const clientId = 'mqttjs_' + Math.random().toString(16).substr(2, 8);
+  const host = 'ws://broker.hivemq.com:8000/mqtt';
+  const options = {
+    keepalive: 60,
+    clientId: clientId,
+    protocolId: 'MQTT',
+    protocolVersion: 4,
+    clean: true,
+    reconnectPeriod: 1000,
+    connectTimeout: 30 * 1000,
+    will: {
+      topic: 'WillMsg',
+      payload: 'Connection Closed abnormally..!',
+      qos: 0,
+      retain: false
+    },
+  };
+  console.log('Connecting mqtt client');
+  const client = mqtt.connect(host, options);
+
+  client.on('connect', () => {
+    console.log(`Client connected: ${clientId}`);
+
+    client.subscribe('/BTL/IoT/fireAlarm/coordinates', { qos: 0 });
+    client.subscribe('/BTL/IoT/fireAlarm/location', { qos: 0 });//topic: location + status
+  });
+
+  let devices = [];
+  //-------------map show---------------------------------------------------
+  window.onload = function () {
+    L.mapquest.key = 'Ljjt4RzEa2qlCMJqkFdDGXYexFvCz53n';
+    // Khởi tạo 'map'
+    var map = L.map('map', {
+      center: [21.0285, 105.8542], // Tọa độ Hà Nội, Việt Nam
+      layers: L.mapquest.tileLayer('map'),
+      zoom: 16
+    });
+
+    map.addControl(L.mapquest.control({ position: 'topleft' }));// Đặt nút chèn lên bản đồ
+
+    var customIcon = L.icon({
+      iconUrl: 'https://assets.mapquestapi.com/icon/v2/marker.png',
+      iconAnchor: [16, 16]
+    });
+
+    const devicesString = sessionStorage.getItem('devices');//save mảng khi chuyển trang
+    const devicesArray = JSON.parse(devicesString);// Chuyển chuỗi JSON thành một mảng 
+    if (devicesArray) {// check exist array
+      devicesArray.forEach(device => {
+        devices.push(device);
+      });
+    }
+
+    //devices.push({ latitude: 21.0285, longitude: 105.8542, markerDanger: null });
+    devices.push({ latitude: 21.0230, longitude: 105.8544, markerDanger: null });//create fake variable
+    devices.push({ latitude: 21.0280, longitude: 105.8580, markerDanger: null });
+    devices.push({ latitude: 21.0240, longitude: 105.8541, markerDanger: null });
+    drawMarkers();
+
+
+    // device
+    client.on('message', (topic, message, packet) => {
+      console.log(`Received Message: ${message.toString()} On topic: ${topic}`);
+      if (topic == '/BTL/IoT/fireAlarm/coordinates') {
+        const messageString = message.toString();
+        const parts = messageString.split(',');
+
+        const storedDevices = JSON.parse(sessionStorage.getItem('devices')) || [];// get list devices từ sessionStorage
+        const device = { latitude: parseFloat(parts[0]), longitude: parseFloat(parts[1]), markerDanger: null };
+        devices.push(device);
+        storedDevices.push(device);// add device vào list devices trong sessionStorage
+        sessionStorage.setItem('devices', JSON.stringify(storedDevices));// add list devices đã cập nhật vào sessionStorage
+        drawMarkers();
+      }
+      if (topic == '/BTL/IoT/fireAlarm/location') {
+        const messageString = message.toString();
+        const parts = messageString.split(',');
+        var deviceFinded = getDevice(parseFloat(parts[0]), parseFloat(parts[1]));
+        if (parts[2] == 'fire' && deviceFinded.markerDanger == null) {
+          var dangerIcon = L.icon({
+            iconUrl: 'https://assets.mapquestapi.com/icon/v2/incident-high-sm.png',
+            iconAnchor: [7, 7]
+          });
+          const markerDanger = L.marker([parseFloat(parts[0]), parseFloat(parts[1])], { icon: dangerIcon }).addTo(map);
+          deviceFinded.markerDanger = markerDanger;
+          //add to database
+          addFireHistory(parseFloat(parts[0]), parseFloat(parts[1]));
+        }
+        if (parts[2] !== 'fire' && deviceFinded.markerDanger !== null) {
+          map.removeLayer(deviceFinded.markerDanger);//remove marker danger
+          deviceFinded.markerDanger = null;
+        }
+      }
+    });
+    function addFireHistory(lat, lng) {
+      getReverseGeocode(lat, lng)
+        .then(address => {
+          const data = {
+            address: address,
+            time: new Date().toISOString()  // Lấy thời gian thực
+          };
+          sendDataToBackend(data);//gửi yêu cầu POST tới backend
+        })
+        .catch(error => {
+          console.error(error);
+        });
+    }
+
+    function sendDataToBackend(data) {
+      fetch('http://localhost:8080/api/lichsuchay/add', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(data)
+      })
+        .then(response => response.json())
+        .then(result => {
+          console.log('Thêm lịch sử cháy thành công:', result);
+        })
+        .catch(error => {
+          console.error('Đã xảy ra lỗi khi thêm lịch sử cháy:', error);
+        });
+    }
+
+    function getReverseGeocode(lat, lng) {//call api chuyển toạ độ sang địa chỉ
+      return new Promise((resolve, reject) => {
+        const nominatimApiUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`;
+
+        fetch(nominatimApiUrl)
+          .then(response => response.json())
+          .then(data => {
+            if (data.address) {
+              const address = data.display_name;
+              resolve(address);
+            } else {
+              reject("Không tìm thấy địa chỉ.");
+            }
+          })
+          .catch(error => {
+            reject(`Đã xảy ra lỗi: ${error}`);
+          });
+      });
+    }
+
+    function getDevice(lat, lng) {
+      for (var i = 0; i < devices.length; i++) {
+        if (devices[i].latitude == lat && devices[i].longitude == lng) {
+          return devices[i];
+        }
+      }
+      return null;
+    }
+
+    function drawMarkers() {
+      devices.forEach(device => {
+        const marker = L.marker([device.latitude, device.longitude], { icon: customIcon }).addTo(map);
+        const popupContent = '<label>Address: <span id="address">-</span></label><br>' +
+          '<label>Status device: <span id="status">-</span></label><br>' +
+          '<button type="button" id="BTN_AUTO" class="button" style="font-size:small;margin:3px" onclick="button_auto_pressed()" disabled>Auto</button>' +
+          '<button type="button" id="BTN_CONTROL" class="button" style="font-size:small;margin:3px" onclick="button_control_pressed()">Control</button><br>' +
+          '<label style="margin-right: 19px;">Led:</label>' +
+          '<button type="button" id="BTN_1" style="margin:3px" onclick="button_1_pressed()" disabled>ON</button>' +
+          '<button type="button" id="BTN_2" style="margin:3px" onclick="button_2_pressed()" disabled>OFF</button><br>' +
+          '<label>Buzzer:</label>' +
+          '<button type="button" id="BTN_3" style="margin:3px" onclick="button_3_pressed()" disabled>ON</button>' +
+          '<button type="button" id="BTN_4" style="margin:3px" onclick="button_4_pressed()" disabled>OFF</button><br>' +
+          '<label style="margin-right: 7px;">Pump:</label>' +
+          '<button type="button" id="BTN_5" style="margin:3px" onclick="button_5_pressed()" disabled>ON</button>' +
+          '<button type="button" id="BTN_6" style="margin:3px" onclick="button_6_pressed()" disabled>OFF</button>';
+
+        marker.bindPopup(popupContent, { closeButton: false, autoClose: false, className: 'popup-content', offset: L.point(-1, 0) });
+
+        marker.on('click', function (e) {
+          this.openPopup();
+          lat = device.latitude;
+          lng = device.longitude;
+
+          client.on('message', (topic, message, packet) => {
+            console.log(`Received Message: ${message.toString()} On topic: ${topic}`);
+            if (topic == '/BTL/IoT/fireAlarm/location') {
+              const messageString = message.toString();
+              const parts = messageString.split(',');
+              const addressCheck = document.getElementById('address');//Card haven't found?
+              const statusCheck = document.getElementById('status');
+              if (lng.toString() == parts[1] && lat.toString() == parts[0] && addressCheck !== null && statusCheck !== null && parts[2] !== 'fire') {
+                message = parts[2] + ',' + parts[3] + ',' + parts[4];
+                //reverse location --> address
+                getReverseGeocode(lat, lng)
+                  .then(address => {
+                    document.getElementById('address').innerHTML = address.toString();
+                  })
+                  .catch(error => {
+                    console.error(error);
+                  });
+                document.getElementById('status').innerHTML = message.toString();
+                if (checkdisabledAll()) document.getElementById("BTN_CONTROL").disabled = false;
+              } else if (lng.toString() == parts[1] && lat.toString() == parts[0] && addressCheck !== null && statusCheck !== null && parts[2] == 'fire') {
+                message = parts[2];
+                //reverse location --> address
+                getReverseGeocode(lat, lng)
+                  .then(address => {
+                    document.getElementById('address').innerHTML = address.toString();
+                  })
+                  .catch(error => {
+                    console.error(error);
+                  });
+                document.getElementById('status').innerHTML = message.toString();
+                disabledAll();
+              }
+            }
+          });
+        });
+      });
+    }
+  };
+
+  function disabledAll() {
+    document.getElementById("BTN_AUTO").disabled = true;
+    document.getElementById("BTN_CONTROL").disabled = true;
+    document.getElementById("BTN_1").disabled = true;
+    document.getElementById("BTN_2").disabled = true;
+    document.getElementById("BTN_3").disabled = true;
+    document.getElementById("BTN_4").disabled = true;
+    document.getElementById("BTN_5").disabled = true;
+    document.getElementById("BTN_6").disabled = true;
+  }
+
+  function checkdisabledAll() {
+    if (document.getElementById("BTN_AUTO").disabled &&
+      document.getElementById("BTN_CONTROL").disabled &&
+      document.getElementById("BTN_1").disabled &&
+      document.getElementById("BTN_2").disabled &&
+      document.getElementById("BTN_3").disabled &&
+      document.getElementById("BTN_4").disabled &&
+      document.getElementById("BTN_5").disabled &&
+      document.getElementById("BTN_6").disabled) return true;
+    else return false;
+  }
+
+  function button_auto_pressed() {
+    sendMessage('auto');
+    document.getElementById("BTN_AUTO").disabled = true;
+    document.getElementById("BTN_CONTROL").disabled = false;
+    document.getElementById("BTN_1").disabled = true;
+    document.getElementById("BTN_2").disabled = true;
+    document.getElementById("BTN_3").disabled = true;
+    document.getElementById("BTN_4").disabled = true;
+    document.getElementById("BTN_5").disabled = true;
+    document.getElementById("BTN_6").disabled = true;
+  }
+
+  function button_control_pressed() {
+    sendMessage('control');
+    document.getElementById("BTN_AUTO").disabled = false;
+    document.getElementById("BTN_CONTROL").disabled = true;
+    document.getElementById("BTN_1").disabled = false;
+    document.getElementById("BTN_2").disabled = false;
+    document.getElementById("BTN_3").disabled = false;
+    document.getElementById("BTN_4").disabled = false;
+    document.getElementById("BTN_5").disabled = false;
+    document.getElementById("BTN_6").disabled = false;
+  }
+
+  function button_1_pressed() {
+    sendMessage('led_on');
+    document.getElementById("BTN_1").disabled = true;
+    document.getElementById("BTN_2").disabled = false;
+  }
+
+  function button_2_pressed() {
+    sendMessage('led_off');
+    document.getElementById("BTN_1").disabled = false;
+    document.getElementById("BTN_2").disabled = true;
+  }
+
+  function button_3_pressed() {
+    sendMessage('buzzer_on');
+    document.getElementById("BTN_3").disabled = true;
+    document.getElementById("BTN_4").disabled = false;
+  }
+
+  function button_4_pressed() {
+    sendMessage('buzzer_off');
+    document.getElementById("BTN_3").disabled = false;
+    document.getElementById("BTN_4").disabled = true;
+  }
+
+  function button_5_pressed() {
+    sendMessage('pump_on');
+    document.getElementById("BTN_5").disabled = true;
+    document.getElementById("BTN_6").disabled = false;
+  }
+
+  function button_6_pressed() {
+    sendMessage('pump_off');
+    document.getElementById("BTN_5").disabled = false;
+    document.getElementById("BTN_6").disabled = true;
+  }
+
+  function sendMessage(message) {
+    const topic = '/BTL/IoT/fireAlarm/control';
+    client.publish(topic, parseFloat(lat) + ',' + parseFloat(lng) + ',' + message, { qos: 0, retain: false }, (error) => {
+      if (error) {
+        console.error('Failed to publish message:', error);
+      } else {
+        console.log(lat + ',' + lng + ',' + message);
+      }
+    });
+  }
+
+</script>
+
+</html>

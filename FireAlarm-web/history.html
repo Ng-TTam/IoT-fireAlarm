@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Lịch sử cháy</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+</head>
+
+<body>
+    <div class="row">
+        <div class="col-2"></div>
+        <div class="col-2 d-flex align-items-center">
+            <a href="/fireAlarm.html" class="btn btn-success"><b>Back</b></a>
+        </div>
+        <div class="col-4">
+            <h1 class="text-center">Lịch sử cháy</h1>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-2"></div>
+        <div class="col-8">
+            <table id="fire-history" class="table table-border">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Địa chỉ</th>
+                        <th>Thời gian</th>
+                    </tr>
+                </thead>
+                <tbody>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        fetch('http://localhost:8080/api/lichsuchay/list')
+            .then(response => response.json())
+            .then(data => {
+                const tableBody = document.querySelector('#fire-history tbody');
+                data.forEach(record => {
+                    const row = document.createElement("tr"); // Tạo một phần tử <tr> mới cho mỗi bản ghi
+                    const datetime = new Date(record.time);
+                    const formattedDatetime = `${datetime.getDate()}/${datetime.getMonth() + 1}/${datetime.getFullYear()}
+                        ${datetime.getHours()}:${datetime.getMinutes()}:${datetime.getSeconds()}`;
+
+                    row.innerHTML = `<td>${record.id}</td>
+                                    <td>${record.address}</td>
+                                    <td>${formattedDatetime}</td>`;
+
+                    tableBody.appendChild(row);
+                });
+            })
+            .catch(error => {
+                console.error('Đã xảy ra lỗi:', error);
+            });
+    </script>
+</body>
+
+</html>
